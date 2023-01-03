@@ -10,6 +10,8 @@ Kits (including a pre-soldered version) are available: https://www.airgradient.c
 The codes needs the following libraries installed:
 “WifiManager by tzapu, tablatronix” tested with version 2.0.11-beta
 “U8g2” by oliver tested with version 2.32.15
+"ESPPubSubClientWrapper" by Erik Foltin tested with version 0.1.0
+"PubSubClient" by Nick O'Leary tested with version 2.8.0
 
 Configuration:
 Please set in the code below the configuration parameters.
@@ -22,7 +24,6 @@ https://www.airgradient.com/
 MIT License
 
 */
-#define MSG_BUFFER_SIZE (256)
 
 #include <AirGradient.h>
 #include <WiFiManager.h>
@@ -39,30 +40,25 @@ U8G2_SSD1306_64X48_ER_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE); //for D
 
 // CONFIGURATION START
 
-//set to the endpoint you would like to use
-String APIROOT = "http://hw.airgradient.com/";
-
 // set to true to switch from Celcius to Fahrenheit
 boolean inF = false;
 
 // PM2.5 in US AQI (default ug/m3)
-boolean inUSAQI = false;
+boolean inUSAQI = true;
 
 // Wifi Settings
 // set to true if you want to connect to wifi. You have 60 seconds to connect. Then it will go into an offline mode.
 boolean connectWIFI=true;
-const char* wifi_ap = "fognet7c548";
-const char* wifi_password = "Fuck0ff@d13";
 
-// The MQTT Server Settings
-const char* mqtt_server = "192.168.87.33";
-const char* mqtt_id = "air_gradient_office";
-const char* mqtt_topic = "air_gradient/office";
-const char* mqtt_username = "home_automation";
-const char* mqtt_password = "1qaz@WSX";
-char msg[MSG_BUFFER_SIZE];
-ESPPubSubClientWrapper mqttClient(mqtt_server);
+// MQTT Server Settings
+const char* mqtt_server = "SERVER_IP";
+const char* mqtt_id = "DESIRED_DEVICE_ID";
+const char* mqtt_topic = "DESIRED_MQTT_TOPIC";
+const char* mqtt_username = "USERNAME";
+const char* mqtt_password = "PASSWORD";
+ESPPubSubClientWrapper mqttClient(mqtt_server, 1883);
 
+// MQTT Connection Callbacks
 void onMqttConnect(uint16_t count){
   Serial.println("Successfully connected");
 }
@@ -72,7 +68,9 @@ void onMqttDisconnect(uint16_t count){
 }
 
 bool onMqttConnectionFailed(uint16_t count){
-  Serial.println("Connection to MQTT server failed");
+  Serial.println("Connection to MQTT server failed, retrying");
+  // set to true to re-try the connection
+  return true;
 }
 // CONFIGURATION END
 
@@ -103,8 +101,8 @@ void mqttSetup(){
   mqttClient.onConnect(onMqttConnect);
   mqttClient.onDisconnect(onMqttDisconnect);
   mqttClient.onConnectFail(onMqttConnectionFailed);
-  mqttClient.connect(mqtt_id, mqtt_username, mqtt_password);
-  
+  // Remove if your MQTT server does not require authentication
+  mqttClient.connect(mqtt_id, mqtt_username, mqtt_password);  
 }
 
 void setup()
@@ -130,11 +128,11 @@ void setup()
 void loop()
 {
   currentMillis = millis();
+  mqttClient.loop();
   updateOLED();
   updateCo2();
   updatePm25();
   updateTempHum();
-  //sendToServer();
   publishToMQTT();
 }
 
@@ -215,73 +213,29 @@ void publishToMQTT() {
     + "}";
     int payload_len = payload.length() + 1;
     char char_payload[payload_len];
-    
 
     if(WiFi.status() == WL_CONNECTED && mqttClient.connected()){
+      Serial.println("Publishing to MQTT server");
+      Serial.println("Payload: "+payload);
       mqttClient.publish(mqtt_topic, strcpy(char_payload, payload.c_str()));
     }
   }
 }
 
-void sendToServer() {
-   if (currentMillis - previoussendToServer >= sendToServerInterval) {
-     previoussendToServer += sendToServerInterval;
-
-      String payload = "{\"wifi\":" + String(WiFi.RSSI())
-      + (Co2 < 0 ? "" : ", \"rco2\":" + String(Co2))
-      + (pm25 < 0 ? "" : ", \"pm02\":" + String(pm25))
-      + ", \"atmp\":" + String(temp)
-      + (hum < 0 ? "" : ", \"rhum\":" + String(hum))
-      + "}";
-
-      if(WiFi.status()== WL_CONNECTED){
-        Serial.println(payload);
-        // HTTP Rest Logic
-        String POSTURL = APIROOT + "sensors/airgradient:" + String(ESP.getChipId(), HEX) + "/measures";
-        Serial.println(POSTURL);
-        WiFiClient client;
-        HTTPClient http;
-        http.begin(client, POSTURL);
-        http.addHeader("content-type", "application/json");
-        int httpCode = http.POST(payload);
-        String response = http.getString();
-        Serial.println(httpCode);
-        Serial.println(response);
-        http.end();
-
-        // HTTP MQTT Logic
-        mqttClient.publish(mqtt_topic, msg);
-      }
-      else {
-        Serial.println("WiFi Disconnected");
-      }
-   }
-}
-
 // Wifi Manager
 void connectToWifi() {
-  updateOLED2("Connecting", "Wifi", wifi_ap);
-  
   WiFiManager wifiManager;
-  bool con_success;
-   
-  con_success = wifiManager.autoConnect(wifi_ap, wifi_password);
-  if(!con_success){
-    updateOLED2("Booting", "offiline", "mode");
-    Serial.println("failed to connect to wifi");
-  } else {
-    Serial.println("successfully connected to wifi");
+  
+  //WiFi.disconnect(); //to delete previous saved hotspot
+  String HOTSPOT = "AG-" + String(ESP.getChipId(), HEX);
+  updateOLED2("Connect", "Wifi", HOTSPOT);
+  delay(2000);
+  wifiManager.setTimeout(60);
+  if (!wifiManager.autoConnect((const char * ) HOTSPOT.c_str())) {
+    updateOLED2("Booting", "offline", "mode");
+    Serial.println("failed to connect and hit timeout");
+    delay(6000);
   }
-   //WiFi.disconnect(); //to delete previous saved hotspot
-   //String HOTSPOT = "AG-" + String(ESP.getChipId(), HEX);
-   //updateOLED2("Connect", "Wifi", HOTSPOT);
-   //delay(2000);
-   //wifiManager.setTimeout(60);
-   //if (!wifiManager.autoConnect((const char * ) HOTSPOT.c_str())) {
-//     updateOLED2("Booting", "offline", "mode");
-     //Serial.println("failed to connect and hit timeout");
-     //delay(6000);
-   //}
 }
 
 // Calculate PM2.5 US AQI
